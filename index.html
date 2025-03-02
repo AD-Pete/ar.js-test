@@ -7,243 +7,216 @@
   <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
   <!-- Add ARJS-device-orientation for better iOS compatibility -->
   <script src="https://raw.githack.com/AR-js-org/AR.js/master/three.js/build/ar-threex-location-only.js"></script>
-  <!-- Add SLAM support with WebXR -->
-  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js"></script>
+  <!-- Add WebXR DOM Overlay for better UI -->
+  <script src="https://unpkg.com/three@0.126.0/examples/js/webxr/VRButton.js"></script>
   <script>
-    // Modified hit-test component with SLAM support for better ground detection
+    // Modified hit-test component with enhanced SLAM support
     AFRAME.registerComponent('hit-test', {
+      schema: {
+        targetElement: {type: 'selector', default: '#ar-box'}
+      },
+      
       init: function () {
-        const box = document.querySelector('#ar-box');
-        box.setAttribute('visible', 'false');
+        this.xrHitTestSource = null;
+        this.viewerSpace = null;
+        this.refSpace = null;
         
-        // Add a ground plane for better visualization
-        const groundPlane = document.createElement('a-plane');
-        groundPlane.setAttribute('id', 'ground-plane');
-        groundPlane.setAttribute('rotation', '-90 0 0');
-        groundPlane.setAttribute('width', '100');
-        groundPlane.setAttribute('height', '100');
-        groundPlane.setAttribute('color', '#7BC8A4');
-        groundPlane.setAttribute('material', 'transparent: true; opacity: 0.2');
-        groundPlane.setAttribute('visible', 'false');
-        this.el.sceneEl.appendChild(groundPlane);
+        this.box = this.data.targetElement;
+        this.box.setAttribute('visible', 'false');
         
-        // Check if WebXR is available and supported
+        // Add debug text for better troubleshooting
+        const debugText = document.createElement('a-text');
+        debugText.setAttribute('id', 'debug-text');
+        debugText.setAttribute('value', 'Initializing AR...');
+        debugText.setAttribute('position', '0 0 -1');
+        debugText.setAttribute('scale', '0.5 0.5 0.5');
+        debugText.setAttribute('align', 'center');
+        debugText.setAttribute('color', 'white');
+        this.el.sceneEl.camera.el.appendChild(debugText);
+        this.debugText = debugText;
+        
+        // Create a start button for better user experience
+        const startButton = document.createElement('button');
+        startButton.textContent = 'Start AR Experience';
+        startButton.style.position = 'absolute';
+        startButton.style.bottom = '20px';
+        startButton.style.left = '50%';
+        startButton.style.transform = 'translateX(-50%)';
+        startButton.style.padding = '12px 24px';
+        startButton.style.backgroundColor = '#4285f4';
+        startButton.style.color = 'white';
+        startButton.style.border = 'none';
+        startButton.style.borderRadius = '4px';
+        startButton.style.fontSize = '16px';
+        startButton.style.zIndex = '999';
+        document.body.appendChild(startButton);
+        
+        // Check WebXR support
         if (navigator.xr) {
-          console.log('WebXR is available');
-          this.setupWebXRSLAM();
+          this.updateDebug('WebXR detected');
+          
+          navigator.xr.isSessionSupported('immersive-ar')
+            .then((supported) => {
+              if (supported) {
+                this.updateDebug('AR supported - tap to start');
+                
+                startButton.addEventListener('click', () => {
+                  startButton.style.display = 'none';
+                  this.startXRSession();
+                });
+              } else {
+                this.updateDebug('WebXR AR not supported - using fallback');
+                this.setupARJSFallback();
+              }
+            });
         } else {
-          console.log('WebXR not available - falling back to AR.js');
+          this.updateDebug('WebXR not available - using fallback');
+          this.setupARJSFallback();
         }
         
-        // Track if we've detected the ground
-        this.groundDetected = false;
-        this.groundY = -1.6; // Default ground height (adjust based on testing)
-        
-        // Detect device orientation for better ground placement
-        window.addEventListener('deviceorientation', (event) => {
-          if (!this.groundDetected && event.beta) {
-            // Use device orientation to estimate ground plane
-            // Beta is the front-to-back tilt in degrees
-            const tiltAngle = event.beta;
-            console.log('Device tilt:', tiltAngle);
-            
-            // If device is pointing downward, we can estimate the ground
-            if (tiltAngle > 45 && tiltAngle < 135) {
-              this.groundY = -1.0; // Adjust based on camera height
-              this.groundDetected = true;
-              groundPlane.setAttribute('position', `0 ${this.groundY} 0`);
-              groundPlane.setAttribute('visible', 'true');
-              console.log('Ground plane estimated at y =', this.groundY);
-            }
-          }
+        // Handle screen taps for object placement
+        this.el.sceneEl.addEventListener('click', (e) => {
+          this.onSelect();
+        });
+      },
+      
+      updateDebug: function(message) {
+        console.log(message);
+        if (this.debugText) {
+          this.debugText.setAttribute('value', message);
+        }
+      },
+      
+      setupARJSFallback: function() {
+        // Use AR.js hit testing as fallback
+        this.el.addEventListener('ar-hit-test-start', () => {
+          this.updateDebug('AR.js hit testing started');
         });
         
-        // Handle touch events for iOS
+        this.el.addEventListener('ar-hit-test-achieved', (event) => {
+          this.updateDebug('AR.js hit test achieved');
+          const position = event.detail.position;
+          this.box.setAttribute('position', position);
+          this.box.setAttribute('visible', 'true');
+        });
+        
+        // Add touch event for manual placement
         document.addEventListener('touchstart', (event) => {
-          // Prevent default behavior for touch events
           event.preventDefault();
           
-          console.log('Touch event detected');
-          
-          // Get screen touch coordinates
-          const touch = event.touches[0];
-          const touchX = touch.clientX / window.innerWidth;
-          const touchY = touch.clientY / window.innerHeight;
-          
-          console.log(`Touch coordinates: ${touchX}, ${touchY}`);
-          
-          // Try WebXR SLAM hit testing first if available
-          if (this.xrHitTestSource && this.xrSession) {
-            console.log('Using WebXR SLAM hit testing');
-            return; // The hit test results will be handled in the XR frame callback
-          }
-          
-          // Try AR.js hit testing next
-          const arjsSystem = this.el.sceneEl.systems['arjs'];
-          if (arjsSystem && arjsSystem.hitTesting) {
-            const hitPosition = arjsSystem.hitTesting.getHitPosition();
-            if (hitPosition) {
-              console.log('AR.js hit position found:', hitPosition);
-              box.setAttribute('position', hitPosition);
-              box.setAttribute('visible', 'true');
-              return;
-            }
-          }
-          
-          // Improved ground plane fallback
-          console.log('Using ground plane fallback positioning');
+          // Get camera position and direction
           const camera = document.querySelector('[camera]');
           if (camera) {
-            // Get camera position and rotation
             const cameraPosition = camera.getAttribute('position');
             const cameraRotation = camera.getAttribute('rotation');
             const radians = THREE.MathUtils.degToRad(cameraRotation.y);
             
-            // Calculate ray from camera based on touch position
-            const rayX = (touchX - 0.5) * 2; // -1 to 1 range
-            const rayY = (0.5 - touchY) * 2; // -1 to 1 range
+            // Place object 2 meters in front of camera, on the ground
+            const distance = 2;
+            const x = cameraPosition.x - Math.sin(radians) * distance;
+            const z = cameraPosition.z - Math.cos(radians) * distance;
             
-            // Calculate intersection with ground plane
-            // Simple ray-plane intersection
-            const groundY = this.groundY;
-            
-            // Direction vector from camera to touch point
-            const dirX = Math.sin(radians) + rayX * 0.5;
-            const dirY = -rayY * 0.5;
-            const dirZ = -Math.cos(radians);
-            
-            // Normalize direction vector
-            const length = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
-            const normDirX = dirX / length;
-            const normDirY = dirY / length;
-            const normDirZ = dirZ / length;
-            
-            // Calculate t for intersection with ground plane
-            if (Math.abs(normDirY) > 0.0001) {
-              const t = (groundY - cameraPosition.y) / normDirY;
-              
-              if (t > 0) {
-                // Calculate intersection point
-                const intersectX = cameraPosition.x + normDirX * t;
-                const intersectZ = cameraPosition.z + normDirZ * t;
-                
-                console.log(`Ground intersection at: ${intersectX}, ${groundY}, ${intersectZ}`);
-                
-                // Place box at intersection
-                box.setAttribute('position', {x: intersectX, y: groundY, z: intersectZ});
-                box.setAttribute('visible', 'true');
-              }
-            }
-          }
-        });
-        
-        // Keep original event listeners for non-iOS devices
-        this.el.addEventListener('ar-hit-test-start', () => {
-          console.log('AR hit testing started');
-        });
-        
-        this.el.addEventListener('ar-hit-test-achieved', (event) => {
-          console.log('AR hit test achieved');
-          const position = event.detail.position;
-          box.setAttribute('position', position);
-          box.setAttribute('visible', 'true');
-        });
-      },
-      
-      // Add new method for WebXR SLAM setup
-      setupWebXRSLAM: function() {
-        if (!navigator.xr) return;
-        
-        // Check if immersive-ar is supported
-        navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-          if (supported) {
-            console.log('Immersive AR is supported - setting up SLAM');
-            
-            // Request a session when the user interacts with the page
-            document.addEventListener('click', () => {
-              if (!this.xrSession) {
-                this.startXRSession();
-              }
-            }, { once: true });
-          } else {
-            console.log('Immersive AR not supported - falling back to AR.js');
+            this.updateDebug(`Placed at: ${x.toFixed(2)}, 0, ${z.toFixed(2)}`);
+            this.box.setAttribute('position', {x: x, y: 0, z: z});
+            this.box.setAttribute('visible', 'true');
           }
         });
       },
       
       startXRSession: function() {
-        navigator.xr.requestSession('immersive-ar', {
-          requiredFeatures: ['hit-test', 'local-floor']
-        }).then((session) => {
-          this.xrSession = session;
-          console.log('XR Session started');
-          
-          // Set up hit test source
-          session.requestReferenceSpace('viewer').then((viewerSpace) => {
-            session.requestHitTestSource({ space: viewerSpace }).then((hitTestSource) => {
-              this.xrHitTestSource = hitTestSource;
-              console.log('Hit test source created');
-            });
-          });
-          
-          // Get local floor reference space for better ground tracking
-          session.requestReferenceSpace('local-floor').then((floorSpace) => {
-            this.xrFloorSpace = floorSpace;
-            console.log('Floor reference space acquired');
+        if (!navigator.xr) return;
+        
+        const sessionInit = {
+          requiredFeatures: ['hit-test', 'dom-overlay'],
+          domOverlay: { root: document.body }
+        };
+        
+        navigator.xr.requestSession('immersive-ar', sessionInit)
+          .then((session) => {
+            this.updateDebug('XR Session started');
+            this.session = session;
             
-            // Update ground plane based on floor space
-            const groundPlane = document.querySelector('#ground-plane');
-            groundPlane.setAttribute('position', '0 0 0');
-            groundPlane.setAttribute('visible', 'true');
-            this.groundDetected = true;
+            const canvas = document.querySelector('canvas.a-canvas');
+            const gl = canvas.getContext('webgl', { xrCompatible: true });
+            
+            session.updateRenderState({
+              baseLayer: new XRWebGLLayer(session, gl)
+            });
+            
+            // Create hit test source
+            session.requestReferenceSpace('viewer').then((space) => {
+              this.viewerSpace = space;
+              session.requestHitTestSource({ space: this.viewerSpace })
+                .then((source) => {
+                  this.xrHitTestSource = source;
+                  this.updateDebug('Hit test source created');
+                })
+                .catch((error) => {
+                  this.updateDebug('Hit test source error: ' + error.message);
+                });
+            });
+            
+            // Get reference space for tracking
+            session.requestReferenceSpace('local').then((space) => {
+              this.refSpace = space;
+              this.updateDebug('Reference space acquired');
+              
+              // Start session rendering
+              session.requestAnimationFrame(this.onXRFrame.bind(this));
+            });
+            
+            session.addEventListener('end', () => {
+              this.updateDebug('XR Session ended');
+              this.xrHitTestSource = null;
+              this.session = null;
+            });
+          })
+          .catch((error) => {
+            this.updateDebug('Session error: ' + error.message);
+            this.setupARJSFallback();
           });
-          
-          // Set up frame loop
-          session.addEventListener('end', () => {
-            console.log('XR Session ended');
-            this.xrSession = null;
-            this.xrHitTestSource = null;
-          });
-          
-          // Process each XR frame
-          session.requestAnimationFrame((time, frame) => {
-            this.onXRFrame(time, frame);
-          });
-        }).catch((error) => {
-          console.error('Failed to start XR session:', error);
-        });
       },
       
       onXRFrame: function(time, frame) {
-        const session = this.xrSession;
-        if (!session) return;
+        if (!this.session || !frame) return;
         
         // Continue the frame loop
-        session.requestAnimationFrame((newTime, newFrame) => {
-          this.onXRFrame(newTime, newFrame);
-        });
+        this.session.requestAnimationFrame(this.onXRFrame.bind(this));
         
-        // Get hit test results if available
-        if (this.xrHitTestSource && frame) {
-          const hitTestResults = frame.getHitTestResults(this.xrHitTestSource);
+        if (!this.xrHitTestSource || !this.refSpace) return;
+        
+        // Get hit test results
+        const hitTestResults = frame.getHitTestResults(this.xrHitTestSource);
+        
+        if (hitTestResults.length > 0) {
+          const pose = hitTestResults[0].getPose(this.refSpace);
           
-          if (hitTestResults.length > 0) {
-            const hitPose = hitTestResults[0].getPose(this.xrFloorSpace);
-            if (hitPose) {
-              const box = document.querySelector('#ar-box');
-              const position = hitPose.transform.position;
-              
-              // Convert WebXR coordinates to A-Frame coordinates
-              box.setAttribute('position', {
-                x: position.x,
-                y: position.y,
-                z: position.z
-              });
-              box.setAttribute('visible', 'true');
-              
-              console.log('SLAM hit test positioned object at:', position);
-            }
+          if (pose) {
+            // Update debug with hit test position
+            const pos = pose.transform.position;
+            this.updateDebug(`Hit: ${pos.x.toFixed(2)}, ${pos.y.toFixed(2)}, ${pos.z.toFixed(2)}`);
+            
+            // Store the hit position for use in onSelect
+            this.hitPose = pose;
           }
+        }
+      },
+      
+      onSelect: function() {
+        if (this.hitPose) {
+          const position = this.hitPose.transform.position;
+          
+          // Convert WebXR coordinates to A-Frame coordinates
+          this.box.setAttribute('position', {
+            x: position.x,
+            y: position.y,
+            z: position.z
+          });
+          this.box.setAttribute('visible', 'true');
+          
+          this.updateDebug(`Object placed at: ${position.x.toFixed(2)}, ${position.y.toFixed(2)}, ${position.z.toFixed(2)}`);
+        } else if (this.session) {
+          this.updateDebug('No surface detected. Point at a surface.');
         }
       }
     });
