@@ -8,11 +8,22 @@
   <!-- Add ARJS-device-orientation for better iOS compatibility -->
   <script src="https://raw.githack.com/AR-js-org/AR.js/master/three.js/build/ar-threex-location-only.js"></script>
   <script>
-    // Modified hit-test component with better iOS support
+    // Modified hit-test component with better iOS support and ground detection
     AFRAME.registerComponent('hit-test', {
       init: function () {
         const box = document.querySelector('#ar-box');
         box.setAttribute('visible', 'false');
+        
+        // Add a ground plane for better visualization
+        const groundPlane = document.createElement('a-plane');
+        groundPlane.setAttribute('id', 'ground-plane');
+        groundPlane.setAttribute('rotation', '-90 0 0');
+        groundPlane.setAttribute('width', '100');
+        groundPlane.setAttribute('height', '100');
+        groundPlane.setAttribute('color', '#7BC8A4');
+        groundPlane.setAttribute('material', 'transparent: true; opacity: 0.2');
+        groundPlane.setAttribute('visible', 'false');
+        this.el.sceneEl.appendChild(groundPlane);
         
         // Check if WebXR is available and supported
         if (navigator.xr) {
@@ -20,6 +31,29 @@
         } else {
           console.log('WebXR not available - falling back to AR.js');
         }
+        
+        // Track if we've detected the ground
+        this.groundDetected = false;
+        this.groundY = -1.6; // Default ground height (adjust based on testing)
+        
+        // Detect device orientation for better ground placement
+        window.addEventListener('deviceorientation', (event) => {
+          if (!this.groundDetected && event.beta) {
+            // Use device orientation to estimate ground plane
+            // Beta is the front-to-back tilt in degrees
+            const tiltAngle = event.beta;
+            console.log('Device tilt:', tiltAngle);
+            
+            // If device is pointing downward, we can estimate the ground
+            if (tiltAngle > 45 && tiltAngle < 135) {
+              this.groundY = -1.0; // Adjust based on camera height
+              this.groundDetected = true;
+              groundPlane.setAttribute('position', `0 ${this.groundY} 0`);
+              groundPlane.setAttribute('visible', 'true');
+              console.log('Ground plane estimated at y =', this.groundY);
+            }
+          }
+        });
         
         // Handle touch events for iOS
         document.addEventListener('touchstart', (event) => {
@@ -47,25 +81,50 @@
             }
           }
           
-          // Fallback: project touch to a fixed distance if hit testing fails
-          console.log('Using fallback positioning');
+          // Improved ground plane fallback
+          console.log('Using ground plane fallback positioning');
           const camera = document.querySelector('[camera]');
           if (camera) {
-            // Create a position 2 meters in front of the camera
-            // Adjust x and y based on touch position
-            const xOffset = (touchX - 0.5) * 2; // -1 to 1 range
-            const yOffset = (0.5 - touchY) * 2; // -1 to 1 range
-            
-            // Get camera direction
+            // Get camera position and rotation
+            const cameraPosition = camera.getAttribute('position');
             const cameraRotation = camera.getAttribute('rotation');
             const radians = THREE.MathUtils.degToRad(cameraRotation.y);
             
-            // Calculate position
-            const x = Math.sin(radians) * 2 + xOffset;
-            const z = -Math.cos(radians) * 2;
+            // Calculate ray from camera based on touch position
+            const rayX = (touchX - 0.5) * 2; // -1 to 1 range
+            const rayY = (0.5 - touchY) * 2; // -1 to 1 range
             
-            box.setAttribute('position', {x: x, y: yOffset, z: z});
-            box.setAttribute('visible', 'true');
+            // Calculate intersection with ground plane
+            // Simple ray-plane intersection
+            const groundY = this.groundY;
+            
+            // Direction vector from camera to touch point
+            const dirX = Math.sin(radians) + rayX * 0.5;
+            const dirY = -rayY * 0.5;
+            const dirZ = -Math.cos(radians);
+            
+            // Normalize direction vector
+            const length = Math.sqrt(dirX * dirX + dirY * dirY + dirZ * dirZ);
+            const normDirX = dirX / length;
+            const normDirY = dirY / length;
+            const normDirZ = dirZ / length;
+            
+            // Calculate t for intersection with ground plane
+            if (Math.abs(normDirY) > 0.0001) {
+              const t = (groundY - cameraPosition.y) / normDirY;
+              
+              if (t > 0) {
+                // Calculate intersection point
+                const intersectX = cameraPosition.x + normDirX * t;
+                const intersectZ = cameraPosition.z + normDirZ * t;
+                
+                console.log(`Ground intersection at: ${intersectX}, ${groundY}, ${intersectZ}`);
+                
+                // Place box at intersection
+                box.setAttribute('position', {x: intersectX, y: groundY, z: intersectZ});
+                box.setAttribute('visible', 'true');
+              }
+            }
           }
         });
         
