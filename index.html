@@ -7,8 +7,10 @@
   <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
   <!-- Add ARJS-device-orientation for better iOS compatibility -->
   <script src="https://raw.githack.com/AR-js-org/AR.js/master/three.js/build/ar-threex-location-only.js"></script>
+  <!-- Add SLAM support with WebXR -->
+  <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js"></script>
   <script>
-    // Modified hit-test component with better iOS support and ground detection
+    // Modified hit-test component with SLAM support for better ground detection
     AFRAME.registerComponent('hit-test', {
       init: function () {
         const box = document.querySelector('#ar-box');
@@ -28,6 +30,7 @@
         // Check if WebXR is available and supported
         if (navigator.xr) {
           console.log('WebXR is available');
+          this.setupWebXRSLAM();
         } else {
           console.log('WebXR not available - falling back to AR.js');
         }
@@ -69,7 +72,13 @@
           
           console.log(`Touch coordinates: ${touchX}, ${touchY}`);
           
-          // Try AR.js hit testing first
+          // Try WebXR SLAM hit testing first if available
+          if (this.xrHitTestSource && this.xrSession) {
+            console.log('Using WebXR SLAM hit testing');
+            return; // The hit test results will be handled in the XR frame callback
+          }
+          
+          // Try AR.js hit testing next
           const arjsSystem = this.el.sceneEl.systems['arjs'];
           if (arjsSystem && arjsSystem.hitTesting) {
             const hitPosition = arjsSystem.hitTesting.getHitPosition();
@@ -139,6 +148,103 @@
           box.setAttribute('position', position);
           box.setAttribute('visible', 'true');
         });
+      },
+      
+      // Add new method for WebXR SLAM setup
+      setupWebXRSLAM: function() {
+        if (!navigator.xr) return;
+        
+        // Check if immersive-ar is supported
+        navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+          if (supported) {
+            console.log('Immersive AR is supported - setting up SLAM');
+            
+            // Request a session when the user interacts with the page
+            document.addEventListener('click', () => {
+              if (!this.xrSession) {
+                this.startXRSession();
+              }
+            }, { once: true });
+          } else {
+            console.log('Immersive AR not supported - falling back to AR.js');
+          }
+        });
+      },
+      
+      startXRSession: function() {
+        navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['hit-test', 'local-floor']
+        }).then((session) => {
+          this.xrSession = session;
+          console.log('XR Session started');
+          
+          // Set up hit test source
+          session.requestReferenceSpace('viewer').then((viewerSpace) => {
+            session.requestHitTestSource({ space: viewerSpace }).then((hitTestSource) => {
+              this.xrHitTestSource = hitTestSource;
+              console.log('Hit test source created');
+            });
+          });
+          
+          // Get local floor reference space for better ground tracking
+          session.requestReferenceSpace('local-floor').then((floorSpace) => {
+            this.xrFloorSpace = floorSpace;
+            console.log('Floor reference space acquired');
+            
+            // Update ground plane based on floor space
+            const groundPlane = document.querySelector('#ground-plane');
+            groundPlane.setAttribute('position', '0 0 0');
+            groundPlane.setAttribute('visible', 'true');
+            this.groundDetected = true;
+          });
+          
+          // Set up frame loop
+          session.addEventListener('end', () => {
+            console.log('XR Session ended');
+            this.xrSession = null;
+            this.xrHitTestSource = null;
+          });
+          
+          // Process each XR frame
+          session.requestAnimationFrame((time, frame) => {
+            this.onXRFrame(time, frame);
+          });
+        }).catch((error) => {
+          console.error('Failed to start XR session:', error);
+        });
+      },
+      
+      onXRFrame: function(time, frame) {
+        const session = this.xrSession;
+        if (!session) return;
+        
+        // Continue the frame loop
+        session.requestAnimationFrame((newTime, newFrame) => {
+          this.onXRFrame(newTime, newFrame);
+        });
+        
+        // Get hit test results if available
+        if (this.xrHitTestSource && frame) {
+          const hitTestResults = frame.getHitTestResults(this.xrHitTestSource);
+          
+          if (hitTestResults.length > 0) {
+            const hitPose = hitTestResults[0].getPose(this.xrFloorSpace);
+            if (hitPose) {
+              const box = document.querySelector('#ar-box');
+              const position = hitPose.transform.position;
+              
+              // Convert WebXR coordinates to A-Frame coordinates
+              box.setAttribute('position', {
+                x: position.x,
+                y: position.y,
+                z: position.z
+              });
+              box.setAttribute('visible', 'true');
+              
+              console.log('SLAM hit test positioned object at:', position);
+            }
+          }
+        }
       }
     });
   </script>
